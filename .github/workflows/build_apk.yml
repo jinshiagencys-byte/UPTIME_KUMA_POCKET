@@ -1,0 +1,202 @@
+name: Build Android APK
+
+# ─────────────────────────────────────────────────────────
+# Builds a signed standalone APK via EAS Build (Expo).
+#
+# Expo manages the Android keystore automatically — no need
+# to create or store your own .jks file.
+#
+# Prerequisites:
+#   1. Create an Expo account at https://expo.dev
+#   2. Run `eas init` locally to get your project ID
+#   3. Update app.json → expo.extra.eas.projectId
+#   4. Create an access token at https://expo.dev/accounts/[you]/settings/access-tokens
+#   5. Add it as a GitHub secret: EXPO_TOKEN
+#
+# Triggers:
+#   - Manual dispatch (Actions → Run workflow)
+#   - Push a tag: git tag app-v0.1.0 && git push --tags
+# ─────────────────────────────────────────────────────────
+
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'EAS Build profile'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  build:
+    name: EAS Build (${{ github.event.inputs.profile || 'preview' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── Checkout ────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js ─────────────────────────────────────────
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # ── EAS CLI ─────────────────────────────────────────
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Verify Expo token
+        run: eas whoami
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      # ── Determine build profile ────────────────────────
+      - name: Set build profile
+        id: profile
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/app-v* ]]; then
+            echo "name=preview" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ github.event.inputs.profile || 'preview' }}" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Extract version info ───────────────────────────
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(node -e "console.log(require('./app.json').expo.version)")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          if [[ "$GITHUB_REF" == refs/tags/app-v* ]]; then
+            TAG=${GITHUB_REF#refs/tags/app-}
+            echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      # ── EAS Build ──────────────────────────────────────
+      # EAS Build runs on Expo's cloud servers.
+      # Signing is handled automatically:
+      #   - preview: Expo generates & manages a keystore for you
+      #   - production: same, or you can upload your own keystore
+      - name: Run EAS Build
+        id: eas_build
+        run: |
+          eas build \
+            --platform android \
+            --profile ${{ steps.profile.outputs.name }} \
+            --non-interactive \
+            --wait \
+            --json \
+            | tee /tmp/eas-build-result.json
+
+          # Extract the APK/AAB download URL from EAS output
+          BUILD_URL=$(cat /tmp/eas-build-result.json | node -e "
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('/dev/stdin', 'utf8'));
+            const result = Array.isArray(data) ? data[0] : data;
+            console.log(result.artifacts?.buildUrl || '');
+          ")
+          echo "build_url=${BUILD_URL}" >> $GITHUB_OUTPUT
+          echo "### ✅ EAS Build complete" >> $GITHUB_STEP_SUMMARY
+          echo "Download: ${BUILD_URL}" >> $GITHUB_STEP_SUMMARY
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      # ── Download the built APK ─────────────────────────
+      - name: Download APK from EAS
+        if: steps.eas_build.outputs.build_url != ''
+        run: |
+          mkdir -p apk
+          curl -L -o "apk/uptime-pocket-${{ steps.version.outputs.tag }}.apk" \
+            "${{ steps.eas_build.outputs.build_url }}"
+          ls -lh apk/
+
+      # ── Upload as GitHub artifact ──────────────────────
+      - name: Upload APK artifact
+        if: steps.eas_build.outputs.build_url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: uptime-pocket-${{ steps.version.outputs.tag }}-${{ steps.profile.outputs.name }}
+          path: apk/*.apk
+          retention-days: 90
+          if-no-files-found: warn
+
+  # ── GitHub Release (only on tag) ──────────────────────
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/app-}
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+          echo "short=$(echo ${TAG} | sed 's/^v//')" >> $GITHUB_OUTPUT
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: uptime-pocket-${{ steps.version.outputs.version }}-preview
+          path: apk/
+
+      - name: Collect changelog
+        run: |
+          PREV=$(git tag --sort=-v:refname | grep -E '^app-v' | sed -n '2p' || true)
+          if [ -n "$PREV" ]; then
+            RANGE="$PREV..$GITHUB_REF_NAME"
+          else
+            RANGE="$GITHUB_REF_NAME"
+          fi
+          {
+            echo "## Uptime Pocket ${{ steps.version.outputs.short }}"
+            echo
+            echo "### 📲 Installation"
+            echo
+            echo "Download the APK below and install it on your Android device."
+            echo "The APK is **signed by Expo** — ready to install directly."
+            echo
+            echo "### 📝 Changes"
+            echo
+            git log --pretty=format:'- %s (%h)' $RANGE -- ':!relay/' 2>/dev/null || echo "- Initial release"
+          } > /tmp/release-body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Uptime Pocket ${{ steps.version.outputs.short }}
+          body_path: /tmp/release-body.md
+          files: apk/*.apk
+          fail_on_unmatched_files: false
