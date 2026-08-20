@@ -56,9 +56,6 @@ jobs:
 
       # ============================================================
       # 6. Correction de settings.gradle
-      #
-      # Expo peut générer les plugins Kotlin directement dans
-      # settings.gradle. Ils ne doivent pas être appliqués ici.
       # ============================================================
       - name: Corriger settings.gradle
         run: |
@@ -72,12 +69,10 @@ jobs:
               raise SystemExit(1)
 
           lines = path.read_text().splitlines()
-
           new_lines = []
 
           for line in lines:
               stripped = line.strip()
-
               if stripped in [
                   'apply plugin: "org.jetbrains.kotlin.android"',
                   "apply plugin: 'org.jetbrains.kotlin.android'",
@@ -86,30 +81,16 @@ jobs:
               ]:
                   print(f"⚠️ Suppression : {line}")
                   continue
-
               new_lines.append(line)
 
           path.write_text("\n".join(new_lines) + "\n")
-
-          print("")
-          print("========================================")
-          print("settings.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(path.read_text())
           PY
 
 
       # ============================================================
-      # 7. Configuration du Compose Compiler
-      #
-      # IMPORTANT :
-      # Le plugin doit être ajouté DANS le bloc plugins {} existant.
-      # S'il n'existe pas de bloc plugins {} mais un bloc buildscript {},
-      # le nouveau plugins {} doit être placé APRÈS la fin de
-      # buildscript {} (Gradle exige buildscript {} avant tout
-      # plugins {} dans le script).
+      # 7. Configuration du Compose Compiler (Racine)
       # ============================================================
-      - name: Configurer Kotlin Compose Compiler
+      - name: Configurer Kotlin Compose Compiler (Root)
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -121,24 +102,14 @@ jobs:
               raise SystemExit(1)
 
           content = path.read_text()
+          # Alignement sur le plugin Kotlin Compose valide
+          plugin_id = 'org.jetbrains.kotlin.plugin.compose'
+          plugin_line = f'    id "{plugin_id}" version "2.0.20" apply false'
 
-          plugin = 'id "org.jetbrains.kotlin.plugin.compose" version "2.2.21" apply false'
-
-          if "org.jetbrains.kotlin.plugin.compose" not in content:
-
+          if plugin_id not in content:
               if "plugins {" in content:
-                  # Il existe déjà un bloc plugins {} : on ajoute dedans
-                  content = content.replace(
-                      "plugins {",
-                      f'''plugins {{
-              {plugin}''',
-                      1
-                  )
-
+                  content = content.replace("plugins {", f"plugins {{\n{plugin_line}", 1)
               elif "buildscript {" in content:
-                  # Pas de bloc plugins{}, mais un buildscript{} : le
-                  # nouveau bloc plugins{} DOIT être placé APRES la fin
-                  # de buildscript{}, sinon Gradle refuse le script.
                   start = content.index("buildscript {")
                   depth = 0
                   end = None
@@ -150,39 +121,17 @@ jobs:
                           if depth == 0:
                               end = i + 1
                               break
-
-                  if end is None:
-                      print("❌ Impossible de trouver la fin du bloc buildscript {}")
-                      raise SystemExit(1)
-
-                  insertion = f'''
-
-          plugins {{
-              {plugin}
-          }}'''
-                  content = content[:end] + insertion + content[end:]
-
+                  if end is not None:
+                      content = content[:end] + f"\n\nplugins {{\n{plugin_line}\n}}" + content[end:]
               else:
-                  # Ni plugins{}, ni buildscript{} : on peut ajouter en
-                  # tête du fichier sans risque de conflit d'ordre.
-                  content = f'''plugins {{
-              {plugin}
-          }}
-
-          ''' + content
+                  content = f"plugins {{\n{plugin_line}\n}}\n\n" + content
 
           path.write_text(content)
-
-          print("")
-          print("========================================")
-          print("android/build.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(content)
           PY
 
 
       # ============================================================
-      # 8. Configuration du Compose Compiler dans l'application
+      # 8. Configuration du Compose Compiler (App)
       # ============================================================
       - name: Configurer Compose Compiler dans app
         run: |
@@ -196,35 +145,16 @@ jobs:
               raise SystemExit(1)
 
           content = path.read_text()
+          plugin_id = 'org.jetbrains.kotlin.plugin.compose'
+          plugin_line = f'    id "{plugin_id}"'
 
-          plugin = 'id "org.jetbrains.kotlin.plugin.compose"'
-
-          if plugin not in content:
-
+          if plugin_id not in content:
               if "plugins {" in content:
-
-                  content = content.replace(
-                      "plugins {",
-                      f'''plugins {{
-              {plugin}''',
-                      1
-                  )
-
+                  content = content.replace("plugins {", f"plugins {{\n{plugin_line}", 1)
               else:
-
-                  content = f'''plugins {{
-              {plugin}
-          }}
-
-          ''' + content
+                  content = f"plugins {{\n{plugin_line}\n}}\n\n" + content
 
           path.write_text(content)
-
-          print("")
-          print("========================================")
-          print("android/app/build.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(content)
           PY
 
 
@@ -233,44 +163,29 @@ jobs:
       # ============================================================
       - name: Vérifier la configuration Android
         run: |
-          echo ""
-          echo "========================================"
-          echo "settings.gradle"
-          echo "========================================"
+          echo "=== settings.gradle ==="
           cat android/settings.gradle
-
-          echo ""
-          echo "========================================"
-          echo "build.gradle"
-          echo "========================================"
+          echo "=== build.gradle ==="
           cat android/build.gradle
-
-          echo ""
-          echo "========================================"
-          echo "app/build.gradle"
-          echo "========================================"
+          echo "=== app/build.gradle ==="
           cat android/app/build.gradle
 
 
       # ============================================================
-      # 10. Vérifier qu'aucun plugin Kotlin incorrect
-      # n'est encore appliqué dans settings.gradle
+      # 10. Nettoyage des plugins incorrects dans settings.gradle
       # ============================================================
       - name: Vérifier settings.gradle
         run: |
           if grep -nE 'apply plugin.*org\.jetbrains\.kotlin\.android' android/settings.gradle; then
-            echo ""
             echo "❌ org.jetbrains.kotlin.android est encore présent dans settings.gradle"
             exit 1
           fi
 
           if grep -nE 'apply plugin.*kotlin-compose' android/settings.gradle; then
-            echo ""
             echo "❌ kotlin-compose est encore présent dans settings.gradle"
             exit 1
           fi
 
-          echo ""
           echo "✅ settings.gradle est correct."
 
 
@@ -312,21 +227,11 @@ jobs:
         run: |
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
 
-          echo ""
-          echo "========================================"
-          echo "VÉRIFICATION DE L'APK"
-          echo "========================================"
-
           if [ -f "$APK" ]; then
-            echo ""
             echo "✅ APK généré avec succès !"
-            echo ""
             ls -lh "$APK"
           else
-            echo ""
             echo "❌ APK introuvable !"
-            echo ""
-            echo "Fichiers disponibles :"
             find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
