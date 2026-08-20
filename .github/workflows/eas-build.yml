@@ -23,24 +23,19 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Cache des dépendances NPM
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
       - name: Installation des dépendances NPM
         run: npm ci
 
-      - name: Génération du dossier natif Android (Expo Prebuild)
-        run: npx expo prebuild --platform android --clean
-
-      - name: Rendre gradlew exécutable
-        run: chmod +x android/gradlew
-
-      - name: Adjust Gradle Wrapper Version
-        run: |
-          cd android
-          ./gradlew wrapper --gradle-version 8.8
-
-      - name: Compiler l'APK Debug sur GitHub
-        run: |
-          cd android
-          ./gradlew assembleDebug --no-daemon
+      - name: Génération et Compilation de l'APK (Expo CLI)
+        run: npx expo run:android --variant debug --no-packager
 
       - name: Sauvegarder l'APK généré comme artefact GitHub
         uses: actions/upload-artifact@v4
