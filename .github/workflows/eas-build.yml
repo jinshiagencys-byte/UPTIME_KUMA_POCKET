@@ -12,107 +12,221 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
       # 1. Récupération du projet
+      # ============================================================
       - name: Checkout le code
         uses: actions/checkout@v4
 
-      # 2. Node.js
+
+      # ============================================================
+      # 2. Configuration de Node.js
+      # ============================================================
       - name: Configuration de Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
-      # 3. Java
+
+      # ============================================================
+      # 3. Configuration de Java
+      # ============================================================
       - name: Configuration de Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 4. Dépendances
+
+      # ============================================================
+      # 4. Installation des dépendances
+      # ============================================================
       - name: Installation des dépendances NPM
         run: npm ci
 
-      # 5. Génération Android avec Expo
+
+      # ============================================================
+      # 5. Génération du projet Android avec Expo
+      # ============================================================
       - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
 
-      # 6. Correction de la configuration Kotlin générée par Expo
+
+      # ============================================================
+      # 6. Correction de settings.gradle
+      #
+      # Expo génère actuellement :
+      #
+      # apply plugin: "org.jetbrains.kotlin.android"
+      # apply plugin: "kotlin-compose"
+      #
+      # dans settings.gradle.
+      #
+      # Ces plugins ne doivent pas être appliqués directement
+      # dans settings.gradle.
+      # ============================================================
       - name: Correction du plugin Kotlin
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          settings = Path("android/settings.gradle")
+          path = Path("android/settings.gradle")
 
-          content = settings.read_text()
+          if not path.exists():
+              print("❌ android/settings.gradle est introuvable")
+              raise SystemExit(1)
 
-          # Ces plugins sont incorrectement appliqués directement
-          # dans settings.gradle.
-          content = content.replace(
-              '\n// Required for Compose / Glance\n'
-              'apply plugin: "org.jetbrains.kotlin.android"\n'
-              'apply plugin: "kotlin-compose"\n',
-              '\n'
-          )
+          lines = path.read_text().splitlines()
 
-          settings.write_text(content)
+          forbidden = [
+              'apply plugin: "org.jetbrains.kotlin.android"',
+              "apply plugin: 'org.jetbrains.kotlin.android'",
+              'apply plugin: "kotlin-compose"',
+              "apply plugin: 'kotlin-compose'",
+          ]
 
-          print("=== settings.gradle corrigé ===")
-          print(content)
+          new_lines = []
+
+          for line in lines:
+              stripped = line.strip()
+
+              if any(plugin in stripped for plugin in forbidden):
+                  print(f"⚠️ Suppression de : {line}")
+                  continue
+
+              new_lines.append(line)
+
+          path.write_text("\n".join(new_lines) + "\n")
+
+          print("")
+          print("========================================")
+          print("settings.gradle APRÈS CORRECTION")
+          print("========================================")
+          print(path.read_text())
           PY
 
-      # 7. Vérification de la configuration
-      - name: Vérifier la configuration Android
+
+      # ============================================================
+      # 7. Vérification obligatoire
+      #
+      # Si le plugin Kotlin est encore présent dans settings.gradle,
+      # le workflow s'arrête immédiatement.
+      # ============================================================
+      - name: Vérifier settings.gradle
         run: |
           echo "========================================"
-          echo "SETTINGS.GRADLE"
+          echo "VÉRIFICATION DE settings.gradle"
+          echo "========================================"
+
+          if grep -nE 'apply plugin.*org\.jetbrains\.kotlin\.android' android/settings.gradle; then
+            echo ""
+            echo "❌ ERREUR : org.jetbrains.kotlin.android est encore"
+            echo "présent dans settings.gradle."
+            exit 1
+          fi
+
+          if grep -nE 'apply plugin.*kotlin-compose' android/settings.gradle; then
+            echo ""
+            echo "❌ ERREUR : kotlin-compose est encore présent"
+            echo "dans settings.gradle."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ settings.gradle ne contient plus les plugins Kotlin problématiques."
+
+
+      # ============================================================
+      # 8. Affichage de la configuration Android
+      # ============================================================
+      - name: Afficher la configuration Android
+        run: |
+          echo ""
+          echo "========================================"
+          echo "ANDROID / settings.gradle"
           echo "========================================"
           cat android/settings.gradle
 
           echo ""
           echo "========================================"
-          echo "BUILD.GRADLE"
+          echo "ANDROID / build.gradle"
           echo "========================================"
           cat android/build.gradle
 
           echo ""
           echo "========================================"
-          echo "APP/BUILD.GRADLE"
+          echo "ANDROID / app/build.gradle"
           echo "========================================"
           cat android/app/build.gradle
 
-      # 8. Gradle exécutable
+          echo ""
+          echo "========================================"
+          echo "ANDROID / gradle.properties"
+          echo "========================================"
+          cat android/gradle.properties
+
+
+      # ============================================================
+      # 9. Rendre Gradle exécutable
+      # ============================================================
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
-      # 9. Nettoyage
+
+      # ============================================================
+      # 10. Vérifier la version de Gradle
+      # ============================================================
+      - name: Vérifier Gradle
+        working-directory: android
+        run: ./gradlew --version
+
+
+      # ============================================================
+      # 11. Nettoyage du projet
+      # ============================================================
       - name: Nettoyer le projet Android
         working-directory: android
-        run: ./gradlew clean --no-daemon
+        run: ./gradlew clean --no-daemon --stacktrace
 
-      # 10. Build APK
+
+      # ============================================================
+      # 12. Construction de l'APK
+      # ============================================================
       - name: Build APK avec Gradle
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      # 11. Vérification APK
+
+      # ============================================================
+      # 13. Vérifier que l'APK existe
+      # ============================================================
       - name: Vérifier l'APK généré
         run: |
+          echo ""
           echo "========================================"
-          echo "APK GÉNÉRÉ"
+          echo "VÉRIFICATION DE L'APK"
           echo "========================================"
 
-          if [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ -f "$APK" ]; then
             echo "✅ APK généré avec succès !"
-            ls -lh android/app/build/outputs/apk/debug/app-debug.apk
+            echo ""
+            ls -lh "$APK"
           else
             echo "❌ APK introuvable !"
+            echo ""
+            echo "Contenu du dossier de sortie :"
+            find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
 
-      # 12. Upload APK
+
+      # ============================================================
+      # 14. Upload de l'APK
+      # ============================================================
       - name: Sauvegarder l'APK généré
         uses: actions/upload-artifact@v4
         with:
