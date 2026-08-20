@@ -35,7 +35,9 @@ jobs:
         run: npm ci
 
       - name: Génération et Compilation de l'APK (Expo CLI)
-        run: npx expo run:android --variant debug --no-packager
+        env:
+          CI: true
+        run: npx expo run:android --variant debug
 
       - name: Sauvegarder l'APK généré comme artefact GitHub
         uses: actions/upload-artifact@v4
