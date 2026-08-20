@@ -31,6 +31,15 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
+      - name: EAS auth check
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+        run: |
+          echo "== eas whoami =="
+          eas whoami || true
+          echo "== eas projects:list (json) =="
+          eas projects:list --json || true
+
       - name: Sanity: show projectId read by Expo
         run: |
           npx expo config --type public > expo-config.json
