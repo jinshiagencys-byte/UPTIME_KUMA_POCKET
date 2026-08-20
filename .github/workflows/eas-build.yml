@@ -23,21 +23,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Configuration du SDK Android
+        uses: android-actions/setup-android@v3
+
       - name: Installation des dépendances NPM
         run: npm ci
 
-      - name: Génération du dossier natif Android
+      - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
 
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
-      - name: Compiler l'APK Debug avec Gradle
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
+      - name: Build APK avec Gradle
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
 
       - name: Sauvegarder l'APK généré comme artefact GitHub
         uses: actions/upload-artifact@v4
