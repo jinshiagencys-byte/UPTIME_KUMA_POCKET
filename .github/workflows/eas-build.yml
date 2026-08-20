@@ -15,14 +15,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-
-      - name: Setup Expo / EAS CLI
-        uses: expo/expo-github-action@v8
-        with:
-          expo-version: latest
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          node-version: '20'
 
       - name: Cache node modules
         uses: actions/cache@v4
@@ -34,6 +27,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
 
       - name: Sanity check config
         run: npx expo config --json
