@@ -1,4 +1,4 @@
-name: Build APK sur GitHub Actions
+name: Build APK sur GitHub Action
 
 on:
   push:
