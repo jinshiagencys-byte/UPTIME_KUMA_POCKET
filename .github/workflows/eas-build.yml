@@ -104,7 +104,10 @@ jobs:
       #
       # IMPORTANT :
       # Le plugin doit être ajouté DANS le bloc plugins {} existant.
-      # Il ne faut surtout pas créer un plugins {} à la fin du fichier.
+      # S'il n'existe pas de bloc plugins {} mais un bloc buildscript {},
+      # le nouveau plugins {} doit être placé APRÈS la fin de
+      # buildscript {} (Gradle exige buildscript {} avant tout
+      # plugins {} dans le script).
       # ============================================================
       - name: Configurer Kotlin Compose Compiler
         run: |
@@ -124,7 +127,7 @@ jobs:
           if "org.jetbrains.kotlin.plugin.compose" not in content:
 
               if "plugins {" in content:
-
+                  # Il existe déjà un bloc plugins {} : on ajoute dedans
                   content = content.replace(
                       "plugins {",
                       f'''plugins {{
@@ -132,8 +135,36 @@ jobs:
                       1
                   )
 
-              else:
+              elif "buildscript {" in content:
+                  # Pas de bloc plugins{}, mais un buildscript{} : le
+                  # nouveau bloc plugins{} DOIT être placé APRES la fin
+                  # de buildscript{}, sinon Gradle refuse le script.
+                  start = content.index("buildscript {")
+                  depth = 0
+                  end = None
+                  for i in range(start, len(content)):
+                      if content[i] == "{":
+                          depth += 1
+                      elif content[i] == "}":
+                          depth -= 1
+                          if depth == 0:
+                              end = i + 1
+                              break
 
+                  if end is None:
+                      print("❌ Impossible de trouver la fin du bloc buildscript {}")
+                      raise SystemExit(1)
+
+                  insertion = f'''
+
+          plugins {{
+              {plugin}
+          }}'''
+                  content = content[:end] + insertion + content[end:]
+
+              else:
+                  # Ni plugins{}, ni buildscript{} : on peut ajouter en
+                  # tête du fichier sans risque de conflit d'ordre.
                   content = f'''plugins {{
               {plugin}
           }}
