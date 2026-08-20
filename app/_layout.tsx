@@ -18,7 +18,6 @@ import { Stack, SplashScreen, Redirect, usePathname } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useFonts } from 'expo-font';
 
 import { useServers } from '@/data/store/servers';
 import { useServersHydrated } from '@/features/servers/useServersHydrated';
@@ -37,9 +36,8 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 export default function RootLayout() {
-  const [loaded, error] = useFonts({
-    // We don't load custom fonts in Phase 0; system fonts only.
-  });
+  const loaded = true;
+  const error = null;
   const { hydrated: serversHydrated } = useServersHydrated();
   const hydratedSettings = useSettings((s) => s.hydrated);
   const hydrateSettings = useSettings((s) => s.hydrate);
