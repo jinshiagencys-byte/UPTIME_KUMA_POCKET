@@ -16,67 +16,92 @@ jobs:
       - name: Checkout le code
         uses: actions/checkout@v4
 
-      # 2. Installation de Node.js
+      # 2. Node.js
       - name: Configuration de Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
-      # 3. Installation de Java
+      # 3. Java
       - name: Configuration de Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 4. Installation des dépendances
+      # 4. Dépendances
       - name: Installation des dépendances NPM
         run: npm ci
 
-      # 5. Génération du projet Android avec Expo
+      # 5. Génération Android avec Expo
       - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
 
-      # 6. Vérification de la configuration générée par Expo
+      # 6. Correction de la configuration Kotlin générée par Expo
+      - name: Correction du plugin Kotlin
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          settings = Path("android/settings.gradle")
+
+          content = settings.read_text()
+
+          # Ces plugins sont incorrectement appliqués directement
+          # dans settings.gradle.
+          content = content.replace(
+              '\n// Required for Compose / Glance\n'
+              'apply plugin: "org.jetbrains.kotlin.android"\n'
+              'apply plugin: "kotlin-compose"\n',
+              '\n'
+          )
+
+          settings.write_text(content)
+
+          print("=== settings.gradle corrigé ===")
+          print(content)
+          PY
+
+      # 7. Vérification de la configuration
       - name: Vérifier la configuration Android
         run: |
           echo "========================================"
-          echo "       ANDROID SETTINGS.GRADLE"
+          echo "SETTINGS.GRADLE"
           echo "========================================"
           cat android/settings.gradle
 
           echo ""
           echo "========================================"
-          echo "       ANDROID BUILD.GRADLE"
+          echo "BUILD.GRADLE"
           echo "========================================"
           cat android/build.gradle
 
           echo ""
           echo "========================================"
-          echo "       GRADLE PROPERTIES"
+          echo "APP/BUILD.GRADLE"
           echo "========================================"
-          cat android/gradle.properties
+          cat android/app/build.gradle
 
-      # 7. Rendre Gradle exécutable
+      # 8. Gradle exécutable
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
-      # 8. Nettoyage Gradle
+      # 9. Nettoyage
       - name: Nettoyer le projet Android
         working-directory: android
         run: ./gradlew clean --no-daemon
 
-      # 9. Construction de l'APK
+      # 10. Build APK
       - name: Build APK avec Gradle
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      # 10. Vérifier que l'APK existe
+      # 11. Vérification APK
       - name: Vérifier l'APK généré
         run: |
           echo "========================================"
-          echo "         APK GÉNÉRÉ"
+          echo "APK GÉNÉRÉ"
           echo "========================================"
 
           if [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
@@ -87,7 +112,7 @@ jobs:
             exit 1
           fi
 
-      # 11. Sauvegarder l'APK comme artefact
+      # 12. Upload APK
       - name: Sauvegarder l'APK généré
         uses: actions/upload-artifact@v4
         with:
