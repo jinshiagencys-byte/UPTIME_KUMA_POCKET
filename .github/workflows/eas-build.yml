@@ -23,14 +23,18 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configuration du SDK Android
-        uses: android-actions/setup-android@v3
-
       - name: Installation des dépendances NPM
         run: npm ci
 
       - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
+
+      - name: Injecter le plugin Kotlin dans build.gradle racine
+        run: |
+          BUILD_GRADLE="android/build.gradle"
+          if ! grep -q "org.jetbrains.kotlin.android" "$BUILD_GRADLE"; then
+            sed -i '/plugins {/a \    id "org.jetbrains.kotlin.android" version "1.9.24" apply false' "$BUILD_GRADLE"
+          fi
 
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
@@ -38,7 +42,7 @@ jobs:
       - name: Build APK avec Gradle
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
+          ./gradlew assembleDebug --no-daemon
 
       - name: Sauvegarder l'APK généré comme artefact GitHub
         uses: actions/upload-artifact@v4
