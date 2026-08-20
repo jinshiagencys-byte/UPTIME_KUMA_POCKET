@@ -17,6 +17,13 @@ jobs:
         with:
           node-version: '18'
 
+      - name: Setup Expo / EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
       - name: Cache node modules
         uses: actions/cache@v4
         with:
@@ -28,36 +35,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
+      - name: Sanity check config
+        run: npx expo config --json
 
-      - name: EAS auth check
+      - name: Run EAS build
         env:
-          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
-        run: |
-          echo "== eas whoami =="
-          eas whoami || true
-          echo "== eas projects:list (json) =="
-          eas projects:list --json || true
-
-      - name: Sanity: show projectId read by Expo
-        run: |
-          npx expo config --type public > expo-config.json
-          echo "ProjectId: $(jq -r '.expo.extra.eas.projectId' expo-config.json)"
-
-      - name: Prebuild Android (clean)
-        run: npx expo prebuild --platform android --clean
-
-      - name: Configure EAS
-        env:
-          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
-        run: eas build:configure --platform android
-
-      - name: Run EAS build (production)
-        env:
-          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
-        run: |
-          # If you manage your keystore yourself, decode it here. Example:
-          # echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
-          # then configure gradle properties to point to keystore.jks
-          eas build --platform android --profile production --non-interactive --clear-cache
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas build --platform android --profile production --non-interactive
