@@ -1,0 +1,54 @@
+name: EAS Android Build
+
+on:
+  push:
+    branches: [ main, 'fix/**' ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Sanity: show projectId read by Expo
+        run: |
+          npx expo config --type public > expo-config.json
+          echo "ProjectId: $(jq -r '.expo.extra.eas.projectId' expo-config.json)"
+
+      - name: Prebuild Android (clean)
+        run: npx expo prebuild --platform android --clean
+
+      - name: Configure EAS
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+        run: eas build:configure --platform android
+
+      - name: Run EAS build (production)
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+        run: |
+          # If you manage your keystore yourself, decode it here. Example:
+          # echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+          # then configure gradle properties to point to keystore.jks
+          eas build --platform android --profile production --non-interactive --clear-cache
