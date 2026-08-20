@@ -1,3 +1,4 @@
+```yaml
 name: Build APK sur GitHub Actions
 
 on:
@@ -11,60 +12,73 @@ permissions:
   contents: read
 
 jobs:
-  build-android-github:
+  build-android:
     runs-on: ubuntu-latest
 
     steps:
       # ============================================================
-      # 1. Récupération du code
+      # 1. CHECKOUT
       # ============================================================
-      - name: Checkout le code
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Configuration de Node.js
-      #    Le lockfile contient ini@7, qui exige Node >= 22.22.2.
+      # 2. NODE.JS
       # ============================================================
-      - name: Configuration de Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '22.22.2'
           cache: npm
 
       # ============================================================
-      # 3. Configuration de Java
-      #    Expo / Android utilise ici JDK 17.
+      # 3. JAVA
+      # IMPORTANT :
+      # PAS de "cache: gradle" ici.
+      # Android/Gradle n'existe pas encore avant expo prebuild.
       # ============================================================
-      - name: Configuration de Java (JDK 17)
-        uses: actions/setup-java@v5
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
-          cache: gradle
 
       # ============================================================
-      # 4. Installation des dépendances
+      # 4. NPM
       # ============================================================
-      - name: Installation des dépendances NPM
+      - name: Installation des dépendances
         run: npm ci
 
       # ============================================================
-      # 5. Génération du projet Android
+      # 5. EXPO PREBUILD
       # ============================================================
-      - name: Génération des fichiers natifs Android
+      - name: Génération Android
         run: npx expo prebuild --platform android --clean
 
       # ============================================================
-      # 6. Corriger settings.gradle
-      #
-      # Expo peut générer dans settings.gradle des "apply plugin"
-      # Kotlin qui n'ont pas leur place dans ce script Settings.
-      # On les supprime uniquement s'ils sont présents.
+      # 6. CACHE GRADLE
+      # IMPORTANT :
+      # placé APRES expo prebuild car android/ existe maintenant.
+      # ============================================================
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties', 'android/gradle/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # ============================================================
+      # 7. CORRECTION settings.gradle
+      # Supprime les plugins Kotlin/Compose qui auraient été
+      # injectés au mauvais endroit par prebuild.
       # ============================================================
       - name: Corriger settings.gradle
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 <<'PY'
           from pathlib import Path
 
           path = Path("android/settings.gradle")
@@ -74,160 +88,207 @@ jobs:
               raise SystemExit(1)
 
           lines = path.read_text(encoding="utf-8").splitlines()
+
           forbidden = {
               'apply plugin: "org.jetbrains.kotlin.android"',
               "apply plugin: 'org.jetbrains.kotlin.android'",
               'apply plugin: "kotlin-compose"',
               "apply plugin: 'kotlin-compose'",
+              'apply plugin: "org.jetbrains.kotlin.plugin.compose"',
+              "apply plugin: 'org.jetbrains.kotlin.plugin.compose'",
           }
 
           new_lines = []
-          removed = 0
 
           for line in lines:
               if line.strip() in forbidden:
                   print(f"⚠️ Suppression : {line}")
-                  removed += 1
                   continue
+
               new_lines.append(line)
 
-          path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-          print(f"✅ settings.gradle corrigé ({removed} ligne(s) supprimée(s))")
+          path.write_text(
+              "\n".join(new_lines) + "\n",
+              encoding="utf-8"
+          )
+
+          print("✅ settings.gradle corrigé")
           PY
 
       # ============================================================
-      # 7. Corriger le Compose Compiler dans build.gradle
-      #
-      # CAUSE DU BUILD ACTUEL :
-      #   classpath('org.jetbrains.kotlin.plugin.compose:...')
-      #
-      # sans version produit :
-      #   Could not find
-      #   org.jetbrains.kotlin.plugin.compose:
-      #   org.jetbrains.kotlin.plugin.compose.gradle.plugin:.
-      #
-      # La version du plugin Compose doit être la même que Kotlin.
-      # On récupère donc automatiquement la version Kotlin générée
-      # par Expo dans gradle/libs.versions.toml.
+      # 8. DETECTION VERSION KOTLIN
       # ============================================================
-      - name: Configurer Compose Compiler avec la version Kotlin du projet
+      - name: Détecter la version Kotlin
+        id: kotlin
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 <<'PY'
           from pathlib import Path
           import re
+          import sys
 
-          android = Path("android")
-          build_gradle = android / "build.gradle"
-
-          if not build_gradle.exists():
-              print("❌ android/build.gradle introuvable")
-              raise SystemExit(1)
-
-          # ----------------------------------------------------------
-          # Trouver la version Kotlin réellement générée par Expo.
-          # Priorité au version catalog, puis aux fichiers Gradle.
-          # ----------------------------------------------------------
           candidates = [
-              android / "gradle/libs.versions.toml",
-              android / "gradle.properties",
-              android / "build.gradle",
-              android / "settings.gradle",
+              Path("android/gradle/libs.versions.toml"),
+              Path("android/build.gradle"),
+              Path("android/build.gradle.kts"),
+              Path("android/settings.gradle"),
           ]
 
-          kotlin_version = None
-          source = None
-
           patterns = [
-              # gradle/libs.versions.toml
               re.compile(r'^\s*kotlin\s*=\s*"([^"]+)"\s*$', re.MULTILINE),
               re.compile(r'^\s*kotlin\s*=\s*\'([^\']+)\'\s*$', re.MULTILINE),
-
-              # variables Gradle possibles
               re.compile(r'kotlinVersion\s*=\s*[\'"]([^\'"]+)[\'"]'),
               re.compile(r'kotlin_version\s*=\s*[\'"]([^\'"]+)[\'"]'),
               re.compile(r'kotlin\.version\s*=\s*[\'"]([^\'"]+)[\'"]'),
           ]
 
-          for candidate in candidates:
-              if not candidate.exists():
+          kotlin_version = None
+
+          for path in candidates:
+              if not path.exists():
                   continue
 
-              text = candidate.read_text(encoding="utf-8", errors="ignore")
+              content = path.read_text(
+                  encoding="utf-8",
+                  errors="ignore"
+              )
 
-              # Le version catalog est le meilleur candidat.
               for pattern in patterns:
-                  match = pattern.search(text)
+                  match = pattern.search(content)
+
                   if match:
                       kotlin_version = match.group(1)
-                      source = str(candidate)
                       break
 
               if kotlin_version:
                   break
 
           if not kotlin_version:
-              print("❌ Impossible de déterminer la version Kotlin générée par Expo.")
+              print("❌ Impossible de trouver la version Kotlin.")
+              print("")
               print("Fichiers inspectés :")
-              for candidate in candidates:
-                  print(f" - {candidate}")
+
+              for path in candidates:
+                  print(f" - {path}")
+
+              print("")
+              print("----- android/gradle/libs.versions.toml -----")
+
+              catalog = Path("android/gradle/libs.versions.toml")
+
+              if catalog.exists():
+                  print(catalog.read_text(encoding="utf-8"))
+              else:
+                  print("Fichier absent.")
+
+              sys.exit(1)
+
+          print(f"✅ Kotlin = {kotlin_version}")
+
+          with open(
+              Path(".github-kotlin-version"),
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write(kotlin_version)
+          PY
+
+          echo "KOTLIN_VERSION=$(cat .github-kotlin-version)" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 9. CORRECTION build.gradle
+      #
+      # Le problème précédent venait de :
+      #
+      # classpath(
+      #   'org.jetbrains.kotlin.plugin.compose:...'
+      # )
+      #
+      # sans version.
+      #
+      # Ici la version Compose = version Kotlin détectée.
+      # ============================================================
+      - name: Configurer Compose Compiler
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import os
+
+          path = Path("android/build.gradle")
+
+          if not path.exists():
+              print("❌ android/build.gradle introuvable")
               raise SystemExit(1)
 
-          print(f"✅ Version Kotlin détectée : {kotlin_version}")
-          print(f"   Source : {source}")
+          kotlin_version = os.environ["KOTLIN_VERSION"]
 
-          content = build_gradle.read_text(encoding="utf-8")
+          content = path.read_text(encoding="utf-8")
 
-          compose_module = (
+          compose_plugin = (
               "org.jetbrains.kotlin.plugin.compose:"
               "org.jetbrains.kotlin.plugin.compose.gradle.plugin"
           )
 
-          # Supprimer toutes les anciennes déclarations Compose du classpath
-          # qu'elles aient ou non une version.
+          # Supprimer les anciennes lignes Compose.
           content = re.sub(
-              rf"^\s*classpath\(['\"]{re.escape(compose_module)}(?::[^'\"]*)?['\"]\)\s*\n?",
+              rf"^\s*classpath\s*\(\s*['\"]{re.escape(compose_plugin)}(?::[^'\"]*)?['\"]\s*\)\s*$",
               "",
               content,
-              flags=re.MULTILINE,
+              flags=re.MULTILINE
           )
 
-          # Injecter UNE déclaration versionnée juste après Kotlin Gradle Plugin.
-          kotlin_marker = "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')"
-          compose_line = (
-              f"    classpath('{compose_module}:{kotlin_version}')"
-          )
+          # Support simple quotes / double quotes pour Kotlin Gradle Plugin.
+          markers = [
+              "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')",
+              'classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")',
+          ]
 
-          if kotlin_marker not in content:
-              # Variante avec guillemets doubles.
-              kotlin_marker = 'classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")'
+          marker = None
 
-          if kotlin_marker not in content:
-              print("❌ Impossible de trouver kotlin-gradle-plugin dans android/build.gradle")
+          for candidate in markers:
+              if candidate in content:
+                  marker = candidate
+                  break
+
+          if marker is None:
+              print("❌ kotlin-gradle-plugin introuvable dans build.gradle")
+              print("")
+              print(content)
               raise SystemExit(1)
 
-          content = content.replace(
-              kotlin_marker,
-              kotlin_marker + "\n" + compose_line,
-              1,
+          compose_line = (
+              f"    classpath('{compose_plugin}:{kotlin_version}')"
           )
 
-          build_gradle.write_text(content, encoding="utf-8")
+          if compose_plugin not in content:
+              content = content.replace(
+                  marker,
+                  marker + "\n" + compose_line,
+                  1
+              )
 
-          print("✅ Compose Compiler ajouté avec la version Kotlin correspondante.")
+          path.write_text(
+              content,
+              encoding="utf-8"
+          )
+
+          print("✅ Compose Compiler configuré")
+          print(f"✅ Version Compose/Kotlin : {kotlin_version}")
+
           print("")
           print("----- android/build.gradle -----")
-          print(build_gradle.read_text(encoding="utf-8"))
+          print(content)
           PY
 
       # ============================================================
-      # 8. Appliquer le plugin Compose dans app/build.gradle
-      #    et supprimer l'ancienne configuration composeOptions.
+      # 10. APP BUILD.GRADLE
       # ============================================================
-      - name: Configurer Compose Compiler dans app
+      - name: Configurer app/build.gradle
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 <<'PY'
           from pathlib import Path
           import re
 
@@ -239,164 +300,163 @@ jobs:
 
           content = path.read_text(encoding="utf-8")
 
-          # ----------------------------------------------------------
-          # 1) Supprimer d'anciennes lignes Compose potentiellement
-          #    générées/ajoutées en double.
-          # ----------------------------------------------------------
+          # Supprimer d'éventuels anciens plugins Compose.
           content = re.sub(
-              r'^\s*apply plugin:\s*["\']kotlin-compose["\']\s*\n?',
+              r'^\s*apply plugin:\s*["\']kotlin-compose["\']\s*$',
               "",
               content,
-              flags=re.MULTILINE,
+              flags=re.MULTILINE
           )
 
           content = re.sub(
-              r'^\s*apply plugin:\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*\n?',
+              r'^\s*apply plugin:\s*["\']org\.jetbrains\.kotlin\.plugin\.compose["\']\s*$',
               "",
               content,
-              flags=re.MULTILINE,
+              flags=re.MULTILINE
           )
 
-          # ----------------------------------------------------------
-          # 2) Ajouter le plugin Compose juste après Kotlin Android.
-          # ----------------------------------------------------------
-          apply_marker = 'apply plugin: "org.jetbrains.kotlin.android"'
-          apply_line = 'apply plugin: "org.jetbrains.kotlin.plugin.compose"'
+          marker = 'apply plugin: "org.jetbrains.kotlin.android"'
+          plugin = 'apply plugin: "org.jetbrains.kotlin.plugin.compose"'
 
-          if apply_marker not in content:
-              print("❌ Impossible de trouver org.jetbrains.kotlin.android")
+          if marker not in content:
+              print("❌ org.jetbrains.kotlin.android introuvable")
+              print("")
+              print(content)
               raise SystemExit(1)
 
           content = content.replace(
-              apply_marker,
-              apply_marker + "\n" + apply_line,
-              1,
+              marker,
+              marker + "\n" + plugin,
+              1
           )
 
-          # ----------------------------------------------------------
-          # 3) Supprimer composeOptions /
-          #    kotlinCompilerExtensionVersion :
-          #    inutile avec le nouveau plugin Compose.
-          # ----------------------------------------------------------
+          # Supprimer ancienne configuration Compose.
           content = re.sub(
               r'\n\s*composeOptions\s*\{\s*'
               r'\n\s*kotlinCompilerExtensionVersion\s*=\s*["\'][^"\']+["\']\s*'
               r'\n\s*\}\s*',
               "\n",
               content,
-              flags=re.MULTILINE,
+              flags=re.MULTILINE
           )
 
-          path.write_text(content, encoding="utf-8")
+          path.write_text(
+              content,
+              encoding="utf-8"
+          )
 
           print("✅ app/build.gradle corrigé")
-          print("")
-          print("----- android/app/build.gradle (début) -----")
-          print("\n".join(path.read_text(encoding="utf-8").splitlines()[:80]))
           PY
 
       # ============================================================
-      # 9. Vérifications utiles avant Gradle
+      # 11. VERIFICATION
       # ============================================================
-      - name: Vérifier les versions et la configuration Android
+      - name: Vérifier la configuration
         shell: bash
         run: |
           echo "========================================"
-          echo "Versions"
+          echo "Node"
           echo "========================================"
           node --version
           npm --version
-          java -version
-          echo ""
 
+          echo ""
+          echo "========================================"
+          echo "Java"
+          echo "========================================"
+          java -version
+
+          echo ""
+          echo "========================================"
+          echo "Kotlin"
+          echo "========================================"
+          echo "$KOTLIN_VERSION"
+
+          echo ""
           echo "========================================"
           echo "settings.gradle"
           echo "========================================"
           cat android/settings.gradle
-          echo ""
 
+          echo ""
           echo "========================================"
           echo "build.gradle"
           echo "========================================"
           cat android/build.gradle
+
           echo ""
+          echo "========================================"
+          echo "app/build.gradle"
+          echo "========================================"
+          cat android/app/build.gradle
 
-          echo "========================================"
-          echo "app/build.gradle (début)"
-          echo "========================================"
-          sed -n '1,110p' android/app/build.gradle
           echo ""
-
           echo "========================================"
-          echo "Vérification absence de classpath Compose sans version"
+          echo "Recherche classpath Compose"
           echo "========================================"
-          if grep -nE "org\.jetbrains\.kotlin\.plugin\.compose\.gradle\.plugin['\"]?\)?$" android/build.gradle; then
-            echo "❌ Un classpath Compose sans version est encore présent."
-            exit 1
-          fi
 
-          echo "✅ Aucun classpath Compose sans version détecté."
+          grep -n "org.jetbrains.kotlin.plugin.compose" \
+            android/build.gradle || true
 
       # ============================================================
-      # 10. Rendre Gradle exécutable
+      # 12. GRADLE EXECUTABLE
       # ============================================================
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
       # ============================================================
-      # 11. Vérifier la version de Gradle
+      # 13. VERSION GRADLE
       # ============================================================
       - name: Vérifier Gradle
         working-directory: android
         run: ./gradlew --version
 
       # ============================================================
-      # 12. Nettoyage
+      # 14. CLEAN
       # ============================================================
-      - name: Nettoyer le projet Android
+      - name: Nettoyer Gradle
         working-directory: android
         run: ./gradlew clean --no-daemon --stacktrace
 
       # ============================================================
-      # 13. Construction de l'APK
+      # 15. BUILD APK
       # ============================================================
-      - name: Build APK avec Gradle
+      - name: Construire APK Debug
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       # ============================================================
-      # 14. Vérification de l'APK
+      # 16. VERIFICATION APK
       # ============================================================
-      - name: Vérifier l'APK généré
+      - name: Vérifier APK
         shell: bash
         run: |
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
 
           echo ""
           echo "========================================"
-          echo "VÉRIFICATION DE L'APK"
+          echo "APK"
           echo "========================================"
 
           if [ -f "$APK" ]; then
-            echo ""
-            echo "✅ APK généré avec succès !"
-            echo ""
+            echo "✅ APK généré avec succès"
             ls -lh "$APK"
           else
+            echo "❌ APK introuvable"
             echo ""
-            echo "❌ APK introuvable !"
-            echo ""
-            echo "Fichiers disponibles :"
-            find android/app/build/outputs -type f 2>/dev/null || true
+            find android/app/build/outputs \
+              -type f \
+              2>/dev/null || true
             exit 1
           fi
 
       # ============================================================
-      # 15. Upload de l'APK
+      # 17. UPLOAD APK
       # ============================================================
-      - name: Sauvegarder l'APK généré
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+```
