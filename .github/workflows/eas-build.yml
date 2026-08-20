@@ -49,26 +49,167 @@ jobs:
 
       # ============================================================
       # 5. Génération du projet Android
-      #
-      # IMPORTANT :
-      # Expo SDK 56 (avec @expo/ui / Jetpack Compose) génère lui-même
-      # dans android/settings.gradle et android/build.gradle la bonne
-      # version de Kotlin, alignée via expoAutolinking.useExpoVersionCatalog()
-      # avec toutes les dépendances natives (react-native-gesture-handler,
-      # react-native-screens, etc.).
-      #
-      # NE PAS patcher ces fichiers après coup : forcer une version de
-      # Kotlin différente (ex: hardcoder "2.2.21") casse cet alignement
-      # et provoque des erreurs de compilation Kotlin difficiles à
-      # diagnostiquer dans les modules natifs (ex: "Function invocation
-      # 'getRootViewTag()' expected").
       # ============================================================
       - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
 
 
       # ============================================================
-      # 6. Vérification de la configuration (lecture seule, pour debug)
+      # 6. Corriger settings.gradle
+      #
+      # expo prebuild génère (bug connu avec Expo SDK 56 + @expo/ui) :
+      #   apply plugin: "org.jetbrains.kotlin.android"
+      #   apply plugin: "kotlin-compose"
+      # à la fin de settings.gradle. C'est invalide à deux titres :
+      #   1) org.jetbrains.kotlin.android est un plugin de PROJET, pas
+      #      un plugin "Settings" : il n'a rien à faire ici.
+      #   2) La syntaxe "apply plugin:" (historique) exige que le
+      #      plugin soit déjà sur le classpath du script, ce qui n'est
+      #      jamais déclaré dans settings.gradle => "Plugin with id
+      #      'org.jetbrains.kotlin.android' not found."
+      # ============================================================
+      - name: Corriger settings.gradle
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/settings.gradle")
+
+          if not path.exists():
+              print("❌ android/settings.gradle introuvable")
+              raise SystemExit(1)
+
+          lines = path.read_text().splitlines()
+
+          new_lines = []
+
+          for line in lines:
+              stripped = line.strip()
+
+              if stripped in [
+                  'apply plugin: "org.jetbrains.kotlin.android"',
+                  "apply plugin: 'org.jetbrains.kotlin.android'",
+                  'apply plugin: "kotlin-compose"',
+                  "apply plugin: 'kotlin-compose'",
+              ]:
+                  print(f"⚠️ Suppression : {line}")
+                  continue
+
+              new_lines.append(line)
+
+          path.write_text("\n".join(new_lines) + "\n")
+
+          print("")
+          print("========================================")
+          print("settings.gradle APRÈS CORRECTION")
+          print("========================================")
+          print(path.read_text())
+          PY
+
+
+      # ============================================================
+      # 7. Ajouter le plugin Compose Compiler au classpath racine
+      #
+      # IMPORTANT : pas de version forcée. Le projet résout déjà
+      # kotlin-gradle-plugin sans version explicite ("classpath(
+      # 'org.jetbrains.kotlin:kotlin-gradle-plugin')"), laissant
+      # Gradle choisir la version cohérente avec tout l'écosystème
+      # RN/Expo. On applique la même logique ici : le Compose
+      # Compiler Gradle plugin DOIT avoir exactement la même version
+      # que kotlin-gradle-plugin, donc on le laisse se résoudre de
+      # la même façon plutôt que de coder une version en dur (ce qui
+      # avait cassé la compilation de react-native-gesture-handler
+      # lors d'un précédent essai).
+      # ============================================================
+      - name: Ajouter le Compose Compiler au classpath (build.gradle)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/build.gradle")
+
+          if not path.exists():
+              print("❌ android/build.gradle introuvable")
+              raise SystemExit(1)
+
+          content = path.read_text()
+
+          classpath_line = "    classpath('org.jetbrains.kotlin.plugin.compose:org.jetbrains.kotlin.plugin.compose.gradle.plugin')"
+
+          if "org.jetbrains.kotlin.plugin.compose" not in content:
+              marker = "classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')"
+              if marker not in content:
+                  print("❌ Impossible de trouver le classpath kotlin-gradle-plugin dans build.gradle")
+                  raise SystemExit(1)
+
+              content = content.replace(
+                  marker,
+                  marker + "\n" + classpath_line,
+                  1
+              )
+
+          path.write_text(content)
+
+          print("")
+          print("========================================")
+          print("android/build.gradle APRÈS CORRECTION")
+          print("========================================")
+          print(content)
+          PY
+
+
+      # ============================================================
+      # 8. Appliquer le plugin dans app/build.gradle et retirer
+      # l'ancienne config Compose (incompatible avec Kotlin 2.0+)
+      # ============================================================
+      - name: Configurer Compose Compiler dans app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("android/app/build.gradle")
+
+          if not path.exists():
+              print("❌ android/app/build.gradle introuvable")
+              raise SystemExit(1)
+
+          content = path.read_text()
+
+          # 1) Appliquer le plugin, juste après org.jetbrains.kotlin.android
+          apply_marker = 'apply plugin: "org.jetbrains.kotlin.android"'
+          apply_line = 'apply plugin: "org.jetbrains.kotlin.plugin.compose"'
+
+          if apply_line not in content:
+              if apply_marker not in content:
+                  print("❌ Impossible de trouver 'apply plugin: org.jetbrains.kotlin.android'")
+                  raise SystemExit(1)
+              content = content.replace(
+                  apply_marker,
+                  apply_marker + "\n" + apply_line,
+                  1
+              )
+
+          # 2) Retirer l'ancien bloc composeOptions { kotlinCompilerExtensionVersion = ... }
+          #    devenu inutile et incompatible avec le nouveau plugin (Kotlin 2.0+).
+          content = re.sub(
+              r'\n\s*composeOptions\s*\{\s*\n\s*kotlinCompilerExtensionVersion\s*=\s*"[^"]*"\s*\n\s*\}\n',
+              "\n",
+              content
+          )
+
+          path.write_text(content)
+
+          print("")
+          print("========================================")
+          print("android/app/build.gradle APRÈS CORRECTION")
+          print("========================================")
+          print(content)
+          PY
+
+
+      # ============================================================
+      # 9. Vérification de la configuration
       # ============================================================
       - name: Vérifier la configuration Android
         run: |
@@ -92,14 +233,14 @@ jobs:
 
 
       # ============================================================
-      # 7. Rendre Gradle exécutable
+      # 10. Rendre Gradle exécutable
       # ============================================================
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
 
       # ============================================================
-      # 8. Vérifier la version de Gradle
+      # 11. Vérifier la version de Gradle
       # ============================================================
       - name: Vérifier Gradle
         working-directory: android
@@ -107,7 +248,7 @@ jobs:
 
 
       # ============================================================
-      # 9. Nettoyage
+      # 12. Nettoyage
       # ============================================================
       - name: Nettoyer le projet Android
         working-directory: android
@@ -115,7 +256,7 @@ jobs:
 
 
       # ============================================================
-      # 10. Construction de l'APK
+      # 13. Construction de l'APK
       # ============================================================
       - name: Build APK avec Gradle
         working-directory: android
@@ -123,7 +264,7 @@ jobs:
 
 
       # ============================================================
-      # 11. Vérification de l'APK
+      # 14. Vérification de l'APK
       # ============================================================
       - name: Vérifier l'APK généré
         run: |
@@ -150,7 +291,7 @@ jobs:
 
 
       # ============================================================
-      # 12. Upload de l'APK
+      # 15. Upload de l'APK
       # ============================================================
       - name: Sauvegarder l'APK généré
         uses: actions/upload-artifact@v4
