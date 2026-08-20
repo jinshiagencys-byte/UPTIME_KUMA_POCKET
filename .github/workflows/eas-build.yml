@@ -49,187 +49,26 @@ jobs:
 
       # ============================================================
       # 5. Génération du projet Android
+      #
+      # IMPORTANT :
+      # Expo SDK 56 (avec @expo/ui / Jetpack Compose) génère lui-même
+      # dans android/settings.gradle et android/build.gradle la bonne
+      # version de Kotlin, alignée via expoAutolinking.useExpoVersionCatalog()
+      # avec toutes les dépendances natives (react-native-gesture-handler,
+      # react-native-screens, etc.).
+      #
+      # NE PAS patcher ces fichiers après coup : forcer une version de
+      # Kotlin différente (ex: hardcoder "2.2.21") casse cet alignement
+      # et provoque des erreurs de compilation Kotlin difficiles à
+      # diagnostiquer dans les modules natifs (ex: "Function invocation
+      # 'getRootViewTag()' expected").
       # ============================================================
       - name: Génération des fichiers natifs Android
         run: npx expo prebuild --platform android --clean
 
 
       # ============================================================
-      # 6. Correction de settings.gradle
-      #
-      # Expo peut générer les plugins Kotlin directement dans
-      # settings.gradle. Ils ne doivent pas être appliqués ici.
-      # ============================================================
-      - name: Corriger settings.gradle
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("android/settings.gradle")
-
-          if not path.exists():
-              print("❌ android/settings.gradle introuvable")
-              raise SystemExit(1)
-
-          lines = path.read_text().splitlines()
-
-          new_lines = []
-
-          for line in lines:
-              stripped = line.strip()
-
-              if stripped in [
-                  'apply plugin: "org.jetbrains.kotlin.android"',
-                  "apply plugin: 'org.jetbrains.kotlin.android'",
-                  'apply plugin: "kotlin-compose"',
-                  "apply plugin: 'kotlin-compose'",
-              ]:
-                  print(f"⚠️ Suppression : {line}")
-                  continue
-
-              new_lines.append(line)
-
-          path.write_text("\n".join(new_lines) + "\n")
-
-          print("")
-          print("========================================")
-          print("settings.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(path.read_text())
-          PY
-
-
-      # ============================================================
-      # 7. Configuration du Compose Compiler
-      #
-      # IMPORTANT :
-      # Le plugin doit être ajouté DANS le bloc plugins {} existant.
-      # S'il n'existe pas de bloc plugins {} mais un bloc buildscript {},
-      # le nouveau plugins {} doit être placé APRÈS la fin de
-      # buildscript {} (Gradle exige buildscript {} avant tout
-      # plugins {} dans le script).
-      # ============================================================
-      - name: Configurer Kotlin Compose Compiler
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("android/build.gradle")
-
-          if not path.exists():
-              print("❌ android/build.gradle introuvable")
-              raise SystemExit(1)
-
-          content = path.read_text()
-
-          plugin = 'id "org.jetbrains.kotlin.plugin.compose" version "2.2.21" apply false'
-
-          if "org.jetbrains.kotlin.plugin.compose" not in content:
-
-              if "plugins {" in content:
-                  # Il existe déjà un bloc plugins {} : on ajoute dedans
-                  content = content.replace(
-                      "plugins {",
-                      f'''plugins {{
-              {plugin}''',
-                      1
-                  )
-
-              elif "buildscript {" in content:
-                  # Pas de bloc plugins{}, mais un buildscript{} : le
-                  # nouveau bloc plugins{} DOIT être placé APRES la fin
-                  # de buildscript{}, sinon Gradle refuse le script.
-                  start = content.index("buildscript {")
-                  depth = 0
-                  end = None
-                  for i in range(start, len(content)):
-                      if content[i] == "{":
-                          depth += 1
-                      elif content[i] == "}":
-                          depth -= 1
-                          if depth == 0:
-                              end = i + 1
-                              break
-
-                  if end is None:
-                      print("❌ Impossible de trouver la fin du bloc buildscript {}")
-                      raise SystemExit(1)
-
-                  insertion = f'''
-
-          plugins {{
-              {plugin}
-          }}'''
-                  content = content[:end] + insertion + content[end:]
-
-              else:
-                  # Ni plugins{}, ni buildscript{} : on peut ajouter en
-                  # tête du fichier sans risque de conflit d'ordre.
-                  content = f'''plugins {{
-              {plugin}
-          }}
-
-          ''' + content
-
-          path.write_text(content)
-
-          print("")
-          print("========================================")
-          print("android/build.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(content)
-          PY
-
-
-      # ============================================================
-      # 8. Configuration du Compose Compiler dans l'application
-      # ============================================================
-      - name: Configurer Compose Compiler dans app
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("android/app/build.gradle")
-
-          if not path.exists():
-              print("❌ android/app/build.gradle introuvable")
-              raise SystemExit(1)
-
-          content = path.read_text()
-
-          plugin = 'id "org.jetbrains.kotlin.plugin.compose"'
-
-          if plugin not in content:
-
-              if "plugins {" in content:
-
-                  content = content.replace(
-                      "plugins {",
-                      f'''plugins {{
-              {plugin}''',
-                      1
-                  )
-
-              else:
-
-                  content = f'''plugins {{
-              {plugin}
-          }}
-
-          ''' + content
-
-          path.write_text(content)
-
-          print("")
-          print("========================================")
-          print("android/app/build.gradle APRÈS CORRECTION")
-          print("========================================")
-          print(content)
-          PY
-
-
-      # ============================================================
-      # 9. Vérification de la configuration
+      # 6. Vérification de la configuration (lecture seule, pour debug)
       # ============================================================
       - name: Vérifier la configuration Android
         run: |
@@ -253,36 +92,14 @@ jobs:
 
 
       # ============================================================
-      # 10. Vérifier qu'aucun plugin Kotlin incorrect
-      # n'est encore appliqué dans settings.gradle
-      # ============================================================
-      - name: Vérifier settings.gradle
-        run: |
-          if grep -nE 'apply plugin.*org\.jetbrains\.kotlin\.android' android/settings.gradle; then
-            echo ""
-            echo "❌ org.jetbrains.kotlin.android est encore présent dans settings.gradle"
-            exit 1
-          fi
-
-          if grep -nE 'apply plugin.*kotlin-compose' android/settings.gradle; then
-            echo ""
-            echo "❌ kotlin-compose est encore présent dans settings.gradle"
-            exit 1
-          fi
-
-          echo ""
-          echo "✅ settings.gradle est correct."
-
-
-      # ============================================================
-      # 11. Rendre Gradle exécutable
+      # 7. Rendre Gradle exécutable
       # ============================================================
       - name: Rendre gradlew exécutable
         run: chmod +x android/gradlew
 
 
       # ============================================================
-      # 12. Vérifier la version de Gradle
+      # 8. Vérifier la version de Gradle
       # ============================================================
       - name: Vérifier Gradle
         working-directory: android
@@ -290,7 +107,7 @@ jobs:
 
 
       # ============================================================
-      # 13. Nettoyage
+      # 9. Nettoyage
       # ============================================================
       - name: Nettoyer le projet Android
         working-directory: android
@@ -298,7 +115,7 @@ jobs:
 
 
       # ============================================================
-      # 14. Construction de l'APK
+      # 10. Construction de l'APK
       # ============================================================
       - name: Build APK avec Gradle
         working-directory: android
@@ -306,7 +123,7 @@ jobs:
 
 
       # ============================================================
-      # 15. Vérification de l'APK
+      # 11. Vérification de l'APK
       # ============================================================
       - name: Vérifier l'APK généré
         run: |
@@ -333,7 +150,7 @@ jobs:
 
 
       # ============================================================
-      # 16. Upload de l'APK
+      # 12. Upload de l'APK
       # ============================================================
       - name: Sauvegarder l'APK généré
         uses: actions/upload-artifact@v4
