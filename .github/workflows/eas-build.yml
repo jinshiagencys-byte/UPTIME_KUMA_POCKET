@@ -1,4 +1,4 @@
-name: EAS Android Build
+name: Build APK sur GitHub Actions
 
 on:
   push:
@@ -6,35 +6,49 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
+  build-android-github:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout le code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Configuration de Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Cache node modules
+      - name: Configuration de Java (JDK 17 obligatoire pour Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache des dépendances Gradle
         uses: actions/cache@v4
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
-            ${{ runner.os }}-node-
+            ${{ runner.os }}-gradle-
 
-      - name: Install dependencies
+      - name: Installation des dépendances NPM
         run: npm ci
 
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
+      - name: Génération du dossier natif Android (Expo Prebuild)
+        run: npx expo prebuild --platform android
 
-      - name: Sanity check config
-        run: npx expo config --json
+      - name: Donner les permissions d'exécution au script Gradle
+        run: chmod +x android/gradlew
 
-      - name: Run EAS build
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform android --profile production --non-interactive
+      - name: Compiler l'APK Release sur GitHub
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Sauvegarder l'APK généré comme artefact GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
